@@ -1,0 +1,242 @@
+Index: conf/battle/battle.conf
+===================================================================
+--- conf/battle/battle.conf	(revision 14148)
++++ conf/battle/battle.conf	(working copy)
+@@ -142,3 +142,22 @@
+ // range. For example, Sonic Blow requires a 2 cell distance before autocasting is allowed.
+ // This setting also affects autospellwhenhit.
+ autospell_check_range: no
++
++// ****************************************
++// Reserved Costume ID's
++// ****************************************
++// Reserved Char ID for costume converted items.
++reserved_costume_id: 999998
+Index: src/map/atcommand.c
+===================================================================
+--- src/map/atcommand.c	(revision 14148)
++++ src/map/atcommand.c	(working copy)
+@@ -1112,7 +1112,7 @@
+ ACMD(item)
+ {
+ 	char item_name[100];
+-	int number = 0, item_id, flag = 0, bound = 0;
++	int number = 0, item_id, flag = 0, bound = 0, costume = 0;
+ 	struct item item_tmp;
+ 	struct item_data *item_data;
+ 	int get_count, i;
+@@ -1166,7 +1166,27 @@
+ 				break;
+ 		}
+ 	}
+-
++	
++		if( !strcmpi(command+1,"costumeitem") )
++	{
++		if( !battle_config.reserved_costume_id )
++		{
++			clif->message(fd, "Costume conversion is disable. Set a value for reserved_cosutme_id on your battle.conf file.");
++			return -1;
++		}
++		if( !(item_data->equip&EQP_HEAD_LOW) &&
++			!(item_data->equip&EQP_HEAD_MID) &&
++			!(item_data->equip&EQP_HEAD_TOP) &&
++			!(item_data->equip&EQP_COSTUME_HEAD_LOW) &&
++			!(item_data->equip&EQP_COSTUME_HEAD_MID) &&
++			!(item_data->equip&EQP_COSTUME_HEAD_TOP) )
++		{
++			clif->message(fd, "You cannot costume this item. Costume only work for headgears.");
++			return -1;
++		}
++		costume = 1;
++	}
++	
+ 	item_id = item_data->nameid;
+ 	get_count = number;
+ 	//Check if it's stackable.
+@@ -1186,6 +1206,14 @@
+ 			item_tmp.identify = 1;
+ 			item_tmp.bound = (unsigned char)bound;
+ 			
++			if( costume == 1 )
++			{ // Costume Item
++				item_tmp.card[0] = CARD0_CREATE;
++				item_tmp.card[2] = GetWord(battle_config.reserved_costume_id, 0);
++				item_tmp.card[3] = GetWord(battle_config.reserved_costume_id, 1);
++			}
++			
++			
+ 			if ((flag = pc->additem(sd, &item_tmp, get_count, LOG_TYPE_COMMAND)))
+ 				clif->additem(sd, 0, 0, flag);
+ 		}
+@@ -9664,6 +9692,7 @@
+ 		ACMD_DEF(searchstore),
+ 		ACMD_DEF(costume),
+ 		ACMD_DEF(skdebug),
++		ACMD_DEF2("costumeitem", item)
+ 	};
+ 	int i;
+ 	
+Index: src/map/battle.c
+===================================================================
+--- src/map/battle.c	(revision 14148)
++++ src/map/battle.c	(working copy)
+@@ -6739,6 +6739,7 @@
+ 	{ "feature.banking",                    &battle_config.feature_banking,                 1,      0,      1,              },
+ 	{ "feature.auction",                    &battle_config.feature_auction,                 0,      0,      2,              },
+ 	{ "idletime_criteria",                  &battle_config.idletime_criteria,            0x25,      1,      INT_MAX,        },
++	{ "reserved_costume_id",                &battle_config.reserved_costume_id,             999998, 0,      INT_MAX,        },
+ 
+ 	{ "mon_trans_disable_in_gvg",           &battle_config.mon_trans_disable_in_gvg,        0,      0,      1,              },
+ 	{ "case_sensitive_aegisnames",          &battle_config.case_sensitive_aegisnames,       1,      0,      1,              },
+Index: src/map/battle.h
+===================================================================
+--- src/map/battle.h	(revision 14148)
++++ src/map/battle.h	(working copy)
+@@ -448,6 +448,9 @@
+ 	int min_npc_vendchat_distance;
+ 	int atcommand_mobinfo_type;
+ 	
++	// Costume System
++	int reserved_costume_id;
++
+ 	int mob_size_influence; // Enable modifications on earned experience, drop rates and monster status depending on monster size. [mkbu95]
+ 	
+ 	/** Hercules **/
+Index: src/map/map.c
+===================================================================
+--- src/map/map.c	(revision 14148)
++++ src/map/map.c	(working copy)
+@@ -1588,6 +1588,13 @@
+ 
+ 	nullpo_retv(sd);
+ 
++		
++	if( battle_config.reserved_costume_id && battle_config.reserved_costume_id == charid )
++	{
++		clif->solved_charname(sd->fd, charid, "COSTUME");
++		return;
++	}
++	
+ 	tsd = map->charid2sd(charid);
+ 	if( tsd ) {
+ 		clif->solved_charname(sd->fd, charid, tsd->status.name);
+Index: src/map/pc.c
+===================================================================
+--- src/map/pc.c	(revision 14148)
++++ src/map/pc.c	(working copy)
+@@ -632,8 +632,8 @@
+ 
+ int pc_equippoint(struct map_session_data *sd,int n)
+ {
+-	int ep = 0;
+-
++	int ep = 0, char_id = 0;
++	
+ 	nullpo_ret(sd);
+ 
+ 	if(!sd->inventory_data[n])
+@@ -655,6 +655,14 @@
+ 				return EQP_SHADOW_ARMS;
+ 		}
+ 	}
++	if( battle_config.reserved_costume_id &&
++		sd->status.inventory[n].card[0] == CARD0_CREATE &&
++		(char_id = MakeDWord(sd->status.inventory[n].card[2],sd->status.inventory[n].card[3])) == battle_config.reserved_costume_id )
++	{ // Costume Item - Converted
++		if( ep&EQP_HEAD_TOP ) { ep &= ~EQP_HEAD_TOP; ep |= EQP_COSTUME_HEAD_TOP; }
++		if( ep&EQP_HEAD_LOW ) { ep &= ~EQP_HEAD_LOW; ep |= EQP_COSTUME_HEAD_LOW; }
++		if( ep&EQP_HEAD_MID ) { ep &= ~EQP_HEAD_MID; ep |= EQP_COSTUME_HEAD_MID; }
++	}
+ 	return ep;
+ }
+ 
+@@ -8525,6 +8533,9 @@
+ 				if( k == EQI_HEAD_MID &&  sd->equip_index[EQI_HEAD_LOW] == index ) continue;
+ 				if( k == EQI_HEAD_TOP && (sd->equip_index[EQI_HEAD_MID] == index || sd->equip_index[EQI_HEAD_LOW] == index) ) continue;
+ 
++				if( (int)MakeDWord(sd->status.inventory[index].card[2],sd->status.inventory[index].card[3]) == battle_config.reserved_costume_id )
++				continue;
++				
+ 				if(!sd->inventory_data[index])
+ 					continue;
+ 				
+Index: src/map/script.c
+===================================================================
+--- src/map/script.c	(revision 14148)
++++ src/map/script.c	(working copy)
+@@ -18595,6 +18595,51 @@
+ 	return true;
+ }
+ 
++/*==========================================
++ * Costume Items Hercules /[Mhalicot]
++ *------------------------------------------*/
++BUILDIN(costume)
++{
++	int i = -1, num, ep;
++	TBL_PC *sd;
++
++	num = script_getnum(st,2); // Equip Slot
++	sd = script->rid2sd(st);
++
++	if( sd == NULL )
++		return 0;
++	if( num > 0 && num <= ARRAYLENGTH(script->equip) )
++		i = pc->checkequip(sd, script->equip[num - 1]);
++	if( i < 0 )
++		return 0;
++	ep = sd->status.inventory[i].equip;
++	if( !(ep&EQP_HEAD_LOW) && !(ep&EQP_HEAD_MID) && !(ep&EQP_HEAD_TOP) )
++		return 0;
++
++	logs->pick_pc(sd, LOG_TYPE_SCRIPT, -1, &sd->status.inventory[i],sd->inventory_data[i]);
++	pc->unequipitem(sd,i,2);
++	clif->delitem(sd,i,1,3);
++	// --------------------------------------------------------------------
++	sd->status.inventory[i].refine = 0;
++	sd->status.inventory[i].attribute = 0;
++	sd->status.inventory[i].card[0] = CARD0_CREATE;
++	sd->status.inventory[i].card[1] = 0;
++	sd->status.inventory[i].card[2] = GetWord(battle_config.reserved_costume_id, 0);
++	sd->status.inventory[i].card[3] = GetWord(battle_config.reserved_costume_id, 1);
++
++	if( ep&EQP_HEAD_TOP ) { ep &= ~EQP_HEAD_TOP; ep |= EQP_COSTUME_HEAD_TOP; }
++	if( ep&EQP_HEAD_LOW ) { ep &= ~EQP_HEAD_LOW; ep |= EQP_COSTUME_HEAD_LOW; }
++	if( ep&EQP_HEAD_MID ) { ep &= ~EQP_HEAD_MID; ep |= EQP_COSTUME_HEAD_MID; }
++	// --------------------------------------------------------------------
++	logs->pick_pc(sd, LOG_TYPE_SCRIPT, 1, &sd->status.inventory[i],sd->inventory_data[i]);
++
++	clif->additem(sd,i,1,0);
++	pc->equipitem(sd,i,ep);
++	clif->misceffect(&sd->bl,3);
++
++	return true;
++}
++
+ // declarations that were supposed to be exported from npc_chat.c
+ #ifdef PCRE_SUPPORT
+ BUILDIN(defpattern);
+@@ -19175,6 +19220,9 @@
+ 		BUILDIN_DEF(changequest, "ii"),
+ 		BUILDIN_DEF(showevent, "i?"),
+ 
++		// Costume System
++		BUILDIN_DEF(costume,"i"),
++		
+ 		/**
+ 		 * hQueue [Ind/Hercules]
+ 		 **/
+Index: src/map/status.c
+===================================================================
+--- src/map/status.c	(revision 14148)
++++ src/map/status.c	(working copy)
+@@ -2540,6 +2540,8 @@
+ 			continue;
+ 		if(i == EQI_COSTUME_TOP && (sd->equip_index[EQI_COSTUME_MID] == index || sd->equip_index[EQI_COSTUME_LOW] == index))
+ 			continue;
++		if( (int)MakeDWord(sd->status.inventory[index].card[2],sd->status.inventory[index].card[3]) == battle_config.reserved_costume_id )
++			continue;
+ 		if(!sd->inventory_data[index])
+ 			continue;
+ 
