@@ -1,0 +1,142 @@
+ src/map/map.hpp              |  1 +
+ src/map/npc.cpp              |  2 ++
+ src/map/npc.hpp              |  1 +
+ src/map/pc.cpp               | 12 +++++++++++-
+ src/map/pc.hpp               |  2 +-
+ src/map/script.cpp           |  1 +
+ src/map/script.hpp           |  1 +
+ src/map/script_constants.hpp |  1 +
+ 8 files changed, 19 insertions(+), 2 deletions(-)
+
+diff --git a/src/map/map.hpp b/src/map/map.hpp
+index fb2275593..ccc0b9f44 100644
+--- a/src/map/map.hpp
++++ b/src/map/map.hpp
+@@ -415,6 +415,7 @@ enum _sp {
+ 	SP_UPPER,SP_PARTNER,SP_CART,SP_FAME,SP_UNBREAKABLE,	//56-60
+ 	SP_CARTINFO=99,	// 99
+ 
++	SP_ITEMUSEDID = 117,
+ 	SP_KILLEDGID=118,
+ 	SP_BASEJOB=119,	// 100+19 - celest
+ 	SP_BASECLASS=120,	//Hmm.. why 100+19? I just use the next one... [Skotlex]
+diff --git a/src/map/npc.cpp b/src/map/npc.cpp
+index 74a3947c3..dbbd314a6 100644
+--- a/src/map/npc.cpp
++++ b/src/map/npc.cpp
+@@ -4407,6 +4407,8 @@ const char *npc_get_script_event_name(int npce_index)
+ 		return script_config.kill_mob_event_name;
+ 	case NPCE_STATCALC:
+ 		return script_config.stat_calc_event_name;
++	case NPCE_ITEMUSED:
++		return script_config.item_used_event_name;
+ 	default:
+ 		ShowError("npc_get_script_event_name: npce_index is outside the array limits: %d (max: %d).\n", npce_index, NPCE_MAX);
+ 		return NULL;
+diff --git a/src/map/npc.hpp b/src/map/npc.hpp
+index 79b4c7114..faf00bc3a 100644
+--- a/src/map/npc.hpp
++++ b/src/map/npc.hpp
+@@ -1151,6 +1151,7 @@ enum npce_event : uint8 {
+ 	NPCE_KILLPC,
+ 	NPCE_KILLNPC,
+ 	NPCE_STATCALC,
++	NPCE_ITEMUSED,
+ 	NPCE_MAX
+ };
+ struct view_data* npc_get_viewdata(int class_);
+diff --git a/src/map/pc.cpp b/src/map/pc.cpp
+index e45b6adb1..2da1c4e99 100755
+--- a/src/map/pc.cpp
++++ b/src/map/pc.cpp
+@@ -4705,9 +4705,11 @@ char pc_additem(struct map_session_data *sd,struct item *item,int amount,e_log_p
+  *------------------------------------------*/
+ char pc_delitem(struct map_session_data *sd,int n,int amount,int type, short reason, e_log_pick_type log_type)
+ {
++	int item_id = 0;
++	
+ 	nullpo_retr(1, sd);
+ 
+-	if(n < 0 || sd->inventory.u.items_inventory[n].nameid == 0 || amount <= 0 || sd->inventory.u.items_inventory[n].amount<amount || sd->inventory_data[n] == NULL)
++	if(n < 0 || (item_id = sd->inventory.u.items_inventory[n].nameid) == 0 || amount <= 0 || sd->inventory.u.items_inventory[n].amount<amount || sd->inventory_data[n] == NULL)
+ 		return 1;
+ 
+ 	log_pick_pc(sd, log_type, -amount, &sd->inventory.u.items_inventory[n]);
+@@ -4725,6 +4727,10 @@ char pc_delitem(struct map_session_data *sd,int n,int amount,int type, short rea
+ 	if(!(type&2))
+ 		clif_updatestatus(sd,SP_WEIGHT);
+ 
++	if(log_type == LOG_TYPE_CONSUME) {
++		pc_setparam(sd, SP_ITEMUSEDID, item_id);
++		npc_script_event(sd, NPCE_ITEMUSED);
++	}
+ 	return 0;
+ }
+ 
+@@ -8110,6 +8116,7 @@ int pc_readparam(struct map_session_data* sd,int type)
+ 		case SP_KILLERRID:       val = sd->killerrid; break;
+ 		case SP_KILLEDRID:       val = sd->killedrid; break;
+ 		case SP_KILLEDGID:       val = sd->killedgid; break;
++		case SP_ITEMUSEDID:      val = sd->itemusedid; break;
+ 		case SP_SITTING:         val = pc_issit(sd)?1:0; break;
+ 		case SP_CHARMOVE:		 val = sd->status.character_moves; break;
+ 		case SP_CHARRENAME:		 val = sd->status.rename; break;
+@@ -8380,6 +8387,9 @@ bool pc_setparam(struct map_session_data *sd,int type,int val)
+ 	case SP_KILLEDGID:
+ 		sd->killedgid = val;
+ 		return true;
++	case SP_ITEMUSEDID:
++		sd->itemusedid = val;
++		return true;
+ 	case SP_CHARMOVE:
+ 		sd->status.character_moves = val;
+ 		return true;
+diff --git a/src/map/pc.hpp b/src/map/pc.hpp
+index 6b61fd3c0..40d9d4058 100644
+--- a/src/map/pc.hpp
++++ b/src/map/pc.hpp
+@@ -587,7 +587,7 @@ struct map_session_data {
+ 	size_t duel_group; // duel vars [LuzZza]
+ 	size_t duel_invite;
+ 
+-	int killerrid, killedrid, killedgid;
++	int killerrid, killedrid, killedgid, itemusedid;
+ 
+ 	int cashPoints, kafraPoints;
+ 	int rental_timer;
+diff --git a/src/map/script.cpp b/src/map/script.cpp
+index 40c5639a3..d6bad196c 100644
+--- a/src/map/script.cpp
++++ b/src/map/script.cpp
+@@ -260,6 +260,7 @@ struct Script_Config script_config = {
+ 	"OnPCBaseLvUpEvent", //baselvup_event_name
+ 	"OnPCJobLvUpEvent", //joblvup_event_name
+ 	"OnPCStatCalcEvent", //stat_calc_event_name
++	"OnItemUsed",
+ 	// NPC related
+ 	"OnTouch_",	//ontouch_event_name (runs on first visible char to enter area, picks another char if the first char leaves)
+ 	"OnTouch",	//ontouch2_event_name (run whenever a char walks into the OnTouch area)
+diff --git a/src/map/script.hpp b/src/map/script.hpp
+index dc7ef161d..8d008f934 100644
+--- a/src/map/script.hpp
++++ b/src/map/script.hpp
+@@ -160,6 +160,7 @@ struct Script_Config {
+ 	const char *baselvup_event_name;
+ 	const char *joblvup_event_name;
+ 	const char *stat_calc_event_name;
++	const char *item_used_event_name;
+ 
+ 	// NPC related
+ 	const char* ontouch_event_name;
+diff --git a/src/map/script_constants.hpp b/src/map/script_constants.hpp
+index 01c8cc8d2..4d2109335 100644
+--- a/src/map/script_constants.hpp
++++ b/src/map/script_constants.hpp
+@@ -513,6 +513,7 @@
+ 	export_parameter("killerrid",SP_KILLERRID);
+ 	export_parameter("killedrid",SP_KILLEDRID);
+ 	export_parameter("killedgid",SP_KILLEDGID);
++	export_parameter("itemusedid", SP_ITEMUSEDID);
+ 	export_parameter("Sitting",SP_SITTING);
+ 	export_parameter("CharMoves",SP_CHARMOVE);
+ 	export_parameter("CharRename",SP_CHARRENAME);
